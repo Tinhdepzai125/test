@@ -1,6 +1,11 @@
 #include <Arduino.h>
 #include <Mouse.h>
 
+// Khai báo HardwareSerial2 phòng trường hợp core chưa mở sẵn (PA3 = RX, PA2 = TX)
+#if !defined(ENABLE_HWSERIAL2)
+HardwareSerial Serial2(PA3, PA2);
+#endif
+
 char rxBuffer[32];
 uint8_t rxIndex = 0;
 
@@ -10,7 +15,7 @@ void setup() {
   // Khởi tạo USB HID Mouse
   Mouse.begin();
 
-  // Khởi tạo USART2 (PA3 = RX2) nhận từ ESP8266 (Baudrate 115200)
+  // Khởi tạo USART2 nhận từ ESP8266 (Baudrate 115200)
   Serial2.begin(115200);
 }
 
