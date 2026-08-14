@@ -1,28 +1,48 @@
+#include <Arduino.h>
 #include <Mouse.h>
 
+char rxBuffer[32];
+uint8_t rxIndex = 0;
+
+void processCommand(char* cmd);
+
 void setup() {
-  Serial2.begin(115200); // PA2=TX, PA3=RX <-> ESP8266
+  // Khởi tạo USB HID Mouse
   Mouse.begin();
+
+  // Khởi tạo USART2 (PA3 = RX2) nhận từ ESP8266 (Baudrate 115200)
+  Serial2.begin(115200);
 }
 
 void loop() {
-  if (Serial2.available()) {
-    String cmd = Serial2.readStringUntil('\n');
-    cmd.trim();
-
-    if (cmd.startsWith("M,")) {
-      int c1 = cmd.indexOf(',', 2);
-      if (c1 > 0) {
-        int dx = cmd.substring(2, c1).toInt();
-        int dy = cmd.substring(c1 + 1).toInt();
-        Mouse.move(dx, dy);
+  // Đọc dữ liệu từ ESP8266
+  while (Serial2.available() > 0) {
+    char c = Serial2.read();
+    
+    if (c == '\n' || c == '\r') {
+      if (rxIndex > 0) {
+        rxBuffer[rxIndex] = '\0';
+        processCommand(rxBuffer);
+        rxIndex = 0;
       }
-    } else if (cmd == "CL") {
-      Mouse.click(MOUSE_LEFT);
-    } else if (cmd == "DL") {
-      Mouse.press(MOUSE_LEFT);
-    } else if (cmd == "UL") {
-      Mouse.release(MOUSE_LEFT);
+    } else if (rxIndex < sizeof(rxBuffer) - 1) {
+      rxBuffer[rxIndex++] = c;
     }
+  }
+}
+
+void processCommand(char* cmd) {
+  // Gói tin di chuyển: "M,dx,dy"
+  if (cmd[0] == 'M' && cmd[1] == ',') {
+    int dx = 0, dy = 0;
+    if (sscanf(cmd + 2, "%d,%d", &dx, &dy) == 2) {
+      dx = constrain(dx, -127, 127);
+      dy = constrain(dy, -127, 127);
+      Mouse.move(dx, dy);
+    }
+  } 
+  // Gói tin Click chuột trái: "CL"
+  else if (strcmp(cmd, "CL") == 0) {
+    Mouse.click(MOUSE_LEFT);
   }
 }
