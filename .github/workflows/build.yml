@@ -33,6 +33,12 @@ jobs:
             git clone https://github.com/cyphunk/JTAGenum.git
           fi
 
+      - name: Patch include pgmspace.h (chỉ tồn tại trên core AVR, không có trên STM32duino)
+        run: |
+          sed -i 's/#include <pgmspace.h>/#if defined(__AVR__)\n#include <pgmspace.h>\n#endif/' JTAGenum/JTAGenum.ino
+          # In lại đoạn quanh dòng include để kiểm tra đã patch đúng chưa
+          grep -n -A2 -B2 "pgmspace" JTAGenum/JTAGenum.ino || true
+
       - name: Build cho Blue Pill (STM32F103C8, generic F103C series)
         run: |
           arduino-cli compile \
@@ -48,4 +54,3 @@ jobs:
             build/*.bin
             build/*.hex
             build/*.elf
-
