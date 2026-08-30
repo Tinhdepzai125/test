@@ -1,0 +1,51 @@
+name: Build JTAGenum for Blue Pill (STM32F103)
+
+on:
+  workflow_dispatch:   # bấm Run workflow thủ công trên tab Actions
+  push:
+    paths:
+      - 'JTAGenum/**'
+      - '.github/workflows/build-jtagenum.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (chứa sketch JTAGenum đã chỉnh sửa)
+        uses: actions/checkout@v4
+
+      - name: Cài arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Thêm board index của STM32duino (Roger Clark's core - hỗ trợ Blue Pill đầy đủ)
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
+
+      - name: Cập nhật index & cài core STM32
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install STMicroelectronics:stm32
+
+      - name: Clone JTAGenum gốc (cyphunk) nếu chưa có sẵn trong repo
+        run: |
+          if [ ! -d "JTAGenum" ]; then
+            git clone https://github.com/cyphunk/JTAGenum.git
+          fi
+
+      - name: Build cho Blue Pill (STM32F103C8, generic F103C series)
+        run: |
+          arduino-cli compile \
+            --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8 \
+            --output-dir build \
+            JTAGenum
+
+      - name: Upload file build (.bin/.hex/.elf) làm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jtagenum-bluepill-build
+          path: |
+            build/*.bin
+            build/*.hex
+            build/*.elf
+
