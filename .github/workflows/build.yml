@@ -56,3 +56,12 @@ jobs:
             **/*.hex
             **/*.bin
           if-no-files-found: ignore
+          
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ strategy.job-index }}
+          path: |
+            **/*.hex
+            **/*.bin
+          if-no-files-found: warn
