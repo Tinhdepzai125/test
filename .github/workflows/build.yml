@@ -20,7 +20,6 @@ jobs:
     strategy:
       matrix:
         sketch:
-          - lc_meter/lc_meter.ino
           - lc_meter/lc_meter_lcd.ino
 
     steps:
