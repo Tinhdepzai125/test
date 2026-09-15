@@ -1,56 +1,59 @@
-name: Build JTAGenum for Blue Pill (STM32F103)
+name: Build LC Meter (Blue Pill / STM32F103C8)
 
 on:
-  workflow_dispatch:   # bấm Run workflow thủ công trên tab Actions
   push:
     paths:
-      - 'JTAGenum/**'
-      - '.github/workflows/build-jtagenum.yml'
+      - '**.ino'
+      - '**.cpp'
+      - '**.h'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - '**.ino'
+      - '**.cpp'
+      - '**.h'
+  workflow_dispatch: {}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        sketch:
+          - lc_meter/lc_meter.ino
+          - lc_meter/lc_meter_lcd.ino
+
     steps:
-      - name: Checkout repo (chứa sketch JTAGenum đã chỉnh sửa)
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Cài arduino-cli
+      - name: Cai dat arduino-cli
         uses: arduino/setup-arduino-cli@v2
 
-      - name: Thêm board index của STM32duino (Roger Clark's core - hỗ trợ Blue Pill đầy đủ)
+      - name: Cai dat core STM32 (STMicroelectronics)
         run: |
-          arduino-cli config init
+          arduino-cli config init --overwrite
           arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
-
-      - name: Cập nhật index & cài core STM32
-        run: |
           arduino-cli core update-index
           arduino-cli core install STMicroelectronics:stm32
 
-      - name: Clone JTAGenum gốc (cyphunk) nếu chưa có sẵn trong repo
+      - name: Cai thu vien can thiet
         run: |
-          if [ ! -d "JTAGenum" ]; then
-            git clone https://github.com/cyphunk/JTAGenum.git
-          fi
+          arduino-cli lib install "LiquidCrystal I2C"
 
-      - name: Patch include pgmspace.h (chỉ tồn tại trên core AVR, không có trên STM32duino)
-        run: |
-          sed -i 's/#include <pgmspace.h>/#if defined(__AVR__)\n#include <pgmspace.h>\n#endif/' JTAGenum/JTAGenum.ino
-          # In lại đoạn quanh dòng include để kiểm tra đã patch đúng chưa
-          grep -n -A2 -B2 "pgmspace" JTAGenum/JTAGenum.ino || true
-
-      - name: Build cho Blue Pill (STM32F103C8, generic F103C series)
+      - name: Build sketch
         run: |
           arduino-cli compile \
             --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8 \
-            --output-dir build \
-            JTAGenum
+            "${{ matrix.sketch }}" \
+            --warnings default
 
-      - name: Upload file build (.bin/.hex/.elf) làm artifact
+      - name: Upload build output (debug)
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: jtagenum-bluepill-build
+          name: build-log-${{ strategy.job-index }}
           path: |
-            build/*.bin
-            build/*.hex
-            build/*.elf
+            **/*.hex
+            **/*.bin
+          if-no-files-found: ignore
