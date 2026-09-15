@@ -39,19 +39,18 @@ jobs:
       - name: Cai thu vien can thiet
         run: |
           arduino-cli lib install "LiquidCrystal I2C"
-
+          
       - name: Build sketch
         run: |
           arduino-cli compile \
             --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8 \
             "${{ matrix.sketch }}" \
+            --output-dir ./build-output/${{ strategy.job-index }} \
             --warnings default
-          
+
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ strategy.job-index }}
-          path: |
-            **/*.hex
-            **/*.bin
+          path: build-output/${{ strategy.job-index }}
           if-no-files-found: warn
