@@ -46,16 +46,6 @@ jobs:
             --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8 \
             "${{ matrix.sketch }}" \
             --warnings default
-
-      - name: Upload build output (debug)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-${{ strategy.job-index }}
-          path: |
-            **/*.hex
-            **/*.bin
-          if-no-files-found: ignore
           
       - name: Upload firmware
         uses: actions/upload-artifact@v4
