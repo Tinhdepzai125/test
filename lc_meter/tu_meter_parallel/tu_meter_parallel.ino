@@ -233,5 +233,11 @@ void loop() {
     Serial.println(Cx == -1 ? "Loi: tu chua xa het" : "Loi: qua thoi gian");
   }
 
-  delay(800);
+  // Cho 800ms nhung van lien tuc kiem tra nut bam trong luc cho,
+  // tranh bo lo lan nhan do delay() cung chan mat het thoi gian
+  uint32_t waitStart = millis();
+  while (millis() - waitStart < 800) {
+    checkUnitButton();
+    delay(10);
+  }
 }
