@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         sketch:
-          - lc_meter/tu_meter
+          - lc_meter/test_lcd
 
     steps:
       - name: Checkout code
