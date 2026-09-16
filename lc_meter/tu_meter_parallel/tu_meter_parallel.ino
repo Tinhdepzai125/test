@@ -26,10 +26,13 @@
  *  E   -> PB13
  *  D4  -> PB14
  *  D5  -> PB15
- *  D6  -> PA8
- *  D7  -> PA9
+ *  D6  -> PB4
+ *  D7  -> PB5
  *  A (backlight+) -> 5V (qua tro han che dong neu module khong co san)
  *  K (backlight-) -> GND
+ *
+ * LUU Y: khong dung PA9/PA10 cho LCD vi day la chan UART1 TX/RX,
+ * bi Serial.begin() chiem dung, gay xung dot du lieu -> LCD ra khoi dac.
  */
 
 #include <Arduino.h>
@@ -40,7 +43,7 @@
 #define PIN_ADC      PA0   // doc dien ap tai nut A
 
 // ==== CAU HINH CHAN LCD (RS, E, D4, D5, D6, D7) ====
-LiquidCrystal lcd(PB12, PB13, PB14, PB15, PA8, PA9);
+LiquidCrystal lcd(PB12, PB13, PB14, PB15, PB4, PB5);
 
 // ==== GIA TRI CHUAN ====
 const float R_REF = 24000.0;   // 24 kOhm 1%
@@ -102,6 +105,45 @@ void showResult(float Cx) {
   if (Cx == -1) {
     lcd.print("Tu chua xa het");
   } else if (Cx == -2) {
+    lcd.print("Qua thoi gian!");
+  } else if (Cx < 1e-9) {
+    lcd.print(Cx * 1e12, 2); lcd.print(" pF");
+  } else if (Cx < 1e-6) {
+    lcd.print(Cx * 1e9, 3); lcd.print(" nF");
+  } else {
+    lcd.print(Cx * 1e6, 3); lcd.print(" uF");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PIN_CHARGE, OUTPUT);
+  digitalWrite(PIN_CHARGE, LOW);
+
+  analogReadResolution(12); // STM32 ADC 12-bit
+
+  lcd.begin(16, 2);
+  lcd.setCursor(0, 0);
+  lcd.print("Tu Meter 8=)");
+  lcd.setCursor(0, 1);
+  lcd.print("R chuan: 24k 1%");
+  delay(1500);
+}
+
+void loop() {
+  float Cx = measureCapacitance();
+  showResult(Cx);
+
+  if (Cx > 0) {
+    Serial.print("Cx = ");
+    Serial.print(Cx * 1e9, 4);
+    Serial.println(" nF");
+  } else {
+    Serial.println(Cx == -1 ? "Loi: tu chua xa het" : "Loi: qua thoi gian");
+  }
+
+  delay(800);
+}
     lcd.print("Qua thoi gian!");
   } else if (Cx < 1e-9) {
     lcd.print(Cx * 1e12, 2); lcd.print(" pF");
