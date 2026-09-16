@@ -41,6 +41,7 @@
 // ==== CAU HINH CHAN DO ====
 #define PIN_CHARGE   PB0   // kich nap tu
 #define PIN_ADC      PA0   // doc dien ap tai nut A
+#define PIN_BUTTON   PA1   // nut toggle don vi hien thi (noi GND khi nhan)
 
 // ==== CAU HINH CHAN LCD (RS, E, D4, D5, D6, D7) ====
 LiquidCrystal lcd(PB12, PB13, PB14, PB15, PB4, PB5);
@@ -49,6 +50,37 @@ LiquidCrystal lcd(PB12, PB13, PB14, PB15, PB4, PB5);
 const float R_REF = 24000.0;   // 24 kOhm 1%
 const float VCC = 3.3;
 const float THRESHOLD_RATIO = 0.632; // 63.2% Vcc = 1 tau
+
+// ==== CHE DO DON VI HIEN THI ====
+enum UnitMode { UNIT_AUTO, UNIT_PF, UNIT_NF, UNIT_UF };
+UnitMode currentUnit = UNIT_AUTO;
+
+const char* unitName(UnitMode u) {
+  switch (u) {
+    case UNIT_AUTO: return "AUTO";
+    case UNIT_PF:   return "pF";
+    case UNIT_NF:   return "nF";
+    case UNIT_UF:   return "uF";
+  }
+  return "?";
+}
+
+// Doc nut bam, debounce, xoay vong AUTO -> pF -> nF -> uF -> AUTO
+void checkUnitButton() {
+  static bool lastState = HIGH;
+  static uint32_t lastDebounce = 0;
+  bool state = digitalRead(PIN_BUTTON);
+
+  if (state != lastState) {
+    lastDebounce = millis();
+  }
+  if ((millis() - lastDebounce) > 50) {
+    if (state == LOW && lastState == HIGH) {
+      currentUnit = (UnitMode)((currentUnit + 1) % 4);
+    }
+  }
+  lastState = state;
+}
 
 // Doc ADC ra dien ap (STM32 ADC 12-bit, 0-4095)
 float readVoltage() {
@@ -111,19 +143,39 @@ float measureCapacitance() {
 void showResult(float Cx) {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Do tu dien (C)");
+  lcd.print("C [");
+  lcd.print(unitName(currentUnit));
+  lcd.print("]");
 
   lcd.setCursor(0, 1);
   if (Cx == -1) {
     lcd.print("Tu chua xa het");
+    return;
   } else if (Cx == -2) {
     lcd.print("Qua thoi gian!");
-  } else if (Cx < 1e-9) {
-    lcd.print(Cx * 1e12, 2); lcd.print(" pF");
-  } else if (Cx < 1e-6) {
-    lcd.print(Cx * 1e9, 3); lcd.print(" nF");
-  } else {
-    lcd.print(Cx * 1e6, 3); lcd.print(" uF");
+    return;
+  }
+
+  UnitMode showAs = currentUnit;
+  if (showAs == UNIT_AUTO) {
+    // Tu chon don vi phu hop nhat theo do lon Cx
+    if (Cx < 1e-9) showAs = UNIT_PF;
+    else if (Cx < 1e-6) showAs = UNIT_NF;
+    else showAs = UNIT_UF;
+  }
+
+  switch (showAs) {
+    case UNIT_PF:
+      lcd.print(Cx * 1e12, 2); lcd.print(" pF");
+      break;
+    case UNIT_NF:
+      lcd.print(Cx * 1e9, 3); lcd.print(" nF");
+      break;
+    case UNIT_UF:
+      lcd.print(Cx * 1e6, 3); lcd.print(" uF");
+      break;
+    default:
+      break;
   }
 }
 
@@ -159,6 +211,7 @@ void setup() {
   Serial.begin(115200);
   pinMode(PIN_CHARGE, OUTPUT);
   digitalWrite(PIN_CHARGE, LOW);
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
 
   analogReadResolution(12); // STM32 ADC 12-bit
 
@@ -167,6 +220,8 @@ void setup() {
 }
 
 void loop() {
+  checkUnitButton();
+
   float Cx = measureCapacitance();
   showResult(Cx);
 
