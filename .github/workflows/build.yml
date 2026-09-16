@@ -38,6 +38,7 @@ jobs:
 
       - name: Cai thu vien can thiet
         run: |
+          arduino-cli lib install "LiquidCrystal"
           arduino-cli lib install "LiquidCrystal I2C"
           
       - name: Build sketch
