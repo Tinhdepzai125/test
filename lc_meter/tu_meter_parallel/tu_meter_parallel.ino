@@ -65,21 +65,26 @@ const char* unitName(UnitMode u) {
   return "?";
 }
 
-// Doc nut bam, debounce, xoay vong AUTO -> pF -> nF -> uF -> AUTO
-void checkUnitButton() {
-  static bool lastState = HIGH;
-  static uint32_t lastDebounce = 0;
-  bool state = digitalRead(PIN_BUTTON);
+// Doc nut bam bang ngat ngoai (interrupt) - khong bao gio bo lo lan nhan
+// du code dang ban do/xa tu, vi ngat se cham vao bat ky luc nao chan xuong muc thap
+volatile bool buttonFlag = false;
+volatile uint32_t lastInterruptTime = 0;
 
-  if (state != lastState) {
-    lastDebounce = millis();
+void onButtonPress() {
+  uint32_t now = millis();
+  // Debounce ngay trong ISR: bo qua neu cach lan truoc <150ms
+  if (now - lastInterruptTime > 150) {
+    buttonFlag = true;
+    lastInterruptTime = now;
   }
-  if ((millis() - lastDebounce) > 50) {
-    if (state == LOW && lastState == HIGH) {
-      currentUnit = (UnitMode)((currentUnit + 1) % 4);
-    }
+}
+
+// Goi trong loop() de xu ly flag do ISR dat, doi don vi hien thi
+void checkUnitButton() {
+  if (buttonFlag) {
+    buttonFlag = false;
+    currentUnit = (UnitMode)((currentUnit + 1) % 4);
   }
-  lastState = state;
 }
 
 // Doc ADC ra dien ap (STM32 ADC 12-bit, 0-4095)
@@ -212,6 +217,7 @@ void setup() {
   pinMode(PIN_CHARGE, OUTPUT);
   digitalWrite(PIN_CHARGE, LOW);
   pinMode(PIN_BUTTON, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), onButtonPress, FALLING);
 
   analogReadResolution(12); // STM32 ADC 12-bit
 
