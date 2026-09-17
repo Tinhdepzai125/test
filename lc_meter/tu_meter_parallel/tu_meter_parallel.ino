@@ -203,16 +203,23 @@ float measureResistance() {
 
   digitalWrite(PIN_CHARGE, LOW); // tra ve trang thai an toan sau khi do
 
-  // Truong hop bien: ho mach (Rx qua lon / khong noi) -> vA gan VCC
-  if (vA > VCC - 0.02) {
-    return -3; // ho mach / Rx qua lon (>999k, ngoai dai)
+  // Chan hoi de tranh chia cho so gan 0 (vA qua gan VCC -> mau so am/qua nho)
+  if (vA >= VCC - 0.005) {
+    return -3; // ho mach / Rx qua lon
   }
-  // Truong hop bien: chap mach (Rx gan 0) -> vA gan 0V
   if (vA < 0.02) {
     return -4; // chap mach / Rx qua nho (gan 0R)
   }
 
   float Rx = R_REF * vA / (VCC - vA);
+
+  // Kiem tra hop ly sau khi tinh: chan floating (khong noi gi/do khong khi)
+  // se cho ra Rx rat lon do nhieu/leakage, khong on dinh -> loai bo luon
+  // thay vi hien thi mot con so vo nghia
+  if (Rx > 999000.0) {
+    return -3; // ngoai dai do (>999k), coi nhu ho mach
+  }
+
   return Rx; // don vi Ohm
 }
 
@@ -331,3 +338,4 @@ void loop() {
     delay(10);
   }
 }
+
