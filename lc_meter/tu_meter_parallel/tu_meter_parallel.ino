@@ -1,21 +1,31 @@
 /*
- * TU METER - RC CHARGING METHOD
+ * TU + DIEN TRO METER - RC CHARGING + CHIA AP TINH
  * Blue Pill (STM32F103C8) - Arduino framework
  * R chuan = 24kOhm 1%
  * LCD1602 dau PARALLEL (4-bit mode) - khong dung I2C
  * 🤡 by Tinh
  *
- * Nguyen ly:
- * 1. Xa tu ve 0V truoc
- * 2. Kich nap qua PB0 -> R 24k -> Cx -> GND
- * 3. Doc ADC lien tuc tai diem giua (PA0), do thoi gian dat 63.2% Vcc (= 1 hang so thoi gian tau = R*C)
- * 4. Cx = tau / R
- * 5. Hien thi len LCD1602 dau truc tiep (parallel, 4-bit mode)
+ * 2 CHE DO (chuyen bang nut PB6):
+ *  MODE_CAP: Do tu dien (C), phuong phap RC charging
+ *    1. Xa tu ve 0V truoc
+ *    2. Kich nap qua PB0 -> R 24k -> Cx -> GND
+ *    3. Doc ADC lien tuc tai diem giua (PA0), do thoi gian dat 63.2% Vcc
+ *    4. Cx = tau / R_REF
  *
- * Ket noi mach do:
+ *  MODE_RES: Do dien tro (R), phuong phap chia ap tinh
+ *    1. PB0 giu HIGH co dinh
+ *    2. Doc dien ap tai diem giua (PA0), lay trung binh 20 mau
+ *    3. Rx = R_REF * V_A / (VCC - V_A)
+ *    Dai do: ~1R - 999k (gioi han boi do phan giai ADC va R_REF=24k)
+ *
+ * Ket noi mach do (dung chung cho ca 2 mode):
  *  PB0  -> 1 chan R 24k
- *  Chan kia R 24k -> Nut A -> Cx -> GND
+ *  Chan kia R 24k -> Nut A -> Cx hoac Rx -> GND
  *  Nut A -> PA0 (ADC input)
+ *
+ * Nut bam:
+ *  PA1 -> GND: toggle don vi hien thi (AUTO/1/2/3)
+ *  PB6 -> GND: toggle che do Do C / Do R
  *
  * Ket noi LCD1602 (parallel, 4-bit):
  *  VSS -> GND
@@ -39,9 +49,10 @@
 #include <LiquidCrystal.h>
 
 // ==== CAU HINH CHAN DO ====
-#define PIN_CHARGE   PB0   // kich nap tu
+#define PIN_CHARGE   PB0   // kich nap tu (C) / nguon chia ap (R)
 #define PIN_ADC      PA0   // doc dien ap tai nut A
 #define PIN_BUTTON   PA1   // nut toggle don vi hien thi (noi GND khi nhan)
+#define PIN_MODE_BTN PB6   // nut chuyen che do Do C / Do R (noi GND khi nhan)
 
 // ==== CAU HINH CHAN LCD (RS, E, D4, D5, D6, D7) ====
 LiquidCrystal lcd(PB12, PB13, PB14, PB15, PB4, PB5);
@@ -51,16 +62,29 @@ const float R_REF = 24000.0;   // 24 kOhm 1%
 const float VCC = 3.3;
 const float THRESHOLD_RATIO = 0.632; // 63.2% Vcc = 1 tau
 
-// ==== CHE DO DON VI HIEN THI ====
-enum UnitMode { UNIT_AUTO, UNIT_PF, UNIT_NF, UNIT_UF };
+// ==== CHE DO DO: TU DIEN (C) hay DIEN TRO (R) ====
+enum MeasureMode { MODE_CAP, MODE_RES };
+volatile MeasureMode currentMode = MODE_CAP;
+
+// ==== CHE DO DON VI HIEN THI (dung chung cho ca C va R, ten khac nhau tuy mode) ====
+enum UnitMode { UNIT_AUTO, UNIT_1, UNIT_2, UNIT_3 };
 UnitMode currentUnit = UNIT_AUTO;
 
 const char* unitName(UnitMode u) {
-  switch (u) {
-    case UNIT_AUTO: return "AUTO";
-    case UNIT_PF:   return "pF";
-    case UNIT_NF:   return "nF";
-    case UNIT_UF:   return "uF";
+  if (currentMode == MODE_CAP) {
+    switch (u) {
+      case UNIT_AUTO: return "AUTO";
+      case UNIT_1:     return "pF";
+      case UNIT_2:     return "nF";
+      case UNIT_3:     return "uF";
+    }
+  } else {
+    switch (u) {
+      case UNIT_AUTO: return "AUTO";
+      case UNIT_1:     return "R";
+      case UNIT_2:     return "kR";
+      case UNIT_3:     return "MR"; // ghi "R" thay Omega vi LCD HD44780 khong co san ky tu Omega chuan
+    }
   }
   return "?";
 }
@@ -70,12 +94,22 @@ const char* unitName(UnitMode u) {
 volatile bool buttonFlag = false;
 volatile uint32_t lastInterruptTime = 0;
 
+volatile bool modeButtonFlag = false;
+volatile uint32_t lastModeInterruptTime = 0;
+
 void onButtonPress() {
   uint32_t now = millis();
-  // Debounce ngay trong ISR: bo qua neu cach lan truoc <150ms
   if (now - lastInterruptTime > 150) {
     buttonFlag = true;
     lastInterruptTime = now;
+  }
+}
+
+void onModeButtonPress() {
+  uint32_t now = millis();
+  if (now - lastModeInterruptTime > 150) {
+    modeButtonFlag = true;
+    lastModeInterruptTime = now;
   }
 }
 
@@ -84,6 +118,11 @@ void checkUnitButton() {
   if (buttonFlag) {
     buttonFlag = false;
     currentUnit = (UnitMode)((currentUnit + 1) % 4);
+  }
+  if (modeButtonFlag) {
+    modeButtonFlag = false;
+    currentMode = (currentMode == MODE_CAP) ? MODE_RES : MODE_CAP;
+    currentUnit = UNIT_AUTO; // reset ve auto khi doi mode, tranh nham don vi cu
   }
 }
 
@@ -145,42 +184,79 @@ float measureCapacitance() {
   return Cx;
 }
 
-void showResult(float Cx) {
+// Do R: chia ap tinh, khong can nap/xa gi ca
+// PB0 (HIGH co dinh) -- R_REF -- Nut A -- Rx -- GND, doc V tai Nut A qua PA0
+// Rx = R_REF * V_A / (VCC - V_A)
+float measureResistance() {
+  pinMode(PIN_CHARGE, OUTPUT);
+  digitalWrite(PIN_CHARGE, HIGH);
+  delay(5); // cho on dinh dien ap truoc khi doc
+
+  // Lay trung binh vai lan doc de giam nhieu ADC
+  float sumV = 0;
+  const int samples = 20;
+  for (int i = 0; i < samples; i++) {
+    sumV += readVoltage();
+    delayMicroseconds(200);
+  }
+  float vA = sumV / samples;
+
+  digitalWrite(PIN_CHARGE, LOW); // tra ve trang thai an toan sau khi do
+
+  // Truong hop bien: ho mach (Rx qua lon / khong noi) -> vA gan VCC
+  if (vA > VCC - 0.02) {
+    return -3; // ho mach / Rx qua lon (>999k, ngoai dai)
+  }
+  // Truong hop bien: chap mach (Rx gan 0) -> vA gan 0V
+  if (vA < 0.02) {
+    return -4; // chap mach / Rx qua nho (gan 0R)
+  }
+
+  float Rx = R_REF * vA / (VCC - vA);
+  return Rx; // don vi Ohm
+}
+
+void showResult(float value) {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("C [");
+  lcd.print(currentMode == MODE_CAP ? "C [" : "R [");
   lcd.print(unitName(currentUnit));
   lcd.print("]");
 
   lcd.setCursor(0, 1);
-  if (Cx == -1) {
-    lcd.print("Tu chua xa het");
-    return;
-  } else if (Cx == -2) {
-    lcd.print("Qua thoi gian!");
-    return;
-  }
 
-  UnitMode showAs = currentUnit;
-  if (showAs == UNIT_AUTO) {
-    // Tu chon don vi phu hop nhat theo do lon Cx
-    if (Cx < 1e-9) showAs = UNIT_PF;
-    else if (Cx < 1e-6) showAs = UNIT_NF;
-    else showAs = UNIT_UF;
-  }
+  if (currentMode == MODE_CAP) {
+    if (value == -1) { lcd.print("Tu chua xa het"); return; }
+    if (value == -2) { lcd.print("Qua thoi gian!"); return; }
 
-  switch (showAs) {
-    case UNIT_PF:
-      lcd.print(Cx * 1e12, 2); lcd.print(" pF");
-      break;
-    case UNIT_NF:
-      lcd.print(Cx * 1e9, 3); lcd.print(" nF");
-      break;
-    case UNIT_UF:
-      lcd.print(Cx * 1e6, 3); lcd.print(" uF");
-      break;
-    default:
-      break;
+    UnitMode showAs = currentUnit;
+    if (showAs == UNIT_AUTO) {
+      if (value < 1e-9) showAs = UNIT_1;
+      else if (value < 1e-6) showAs = UNIT_2;
+      else showAs = UNIT_3;
+    }
+    switch (showAs) {
+      case UNIT_1: lcd.print(value * 1e12, 2); lcd.print(" pF"); break;
+      case UNIT_2: lcd.print(value * 1e9, 3); lcd.print(" nF"); break;
+      case UNIT_3: lcd.print(value * 1e6, 3); lcd.print(" uF"); break;
+      default: break;
+    }
+  } else {
+    if (value == -3) { lcd.print("Ho mach/qua lon"); return; }
+    if (value == -4) { lcd.print("Chap/qua nho"); return; }
+
+    UnitMode showAs = currentUnit;
+    if (showAs == UNIT_AUTO) {
+      if (value < 1000) showAs = UNIT_1;
+      else if (value < 1000000) showAs = UNIT_2;
+      else showAs = UNIT_3;
+    }
+    switch (showAs) {
+      case UNIT_1: lcd.print(value, 1); lcd.print(" R"); break;
+      case UNIT_2: lcd.print(value / 1000.0, 3); lcd.print(" kR"); break;
+      case UNIT_3: lcd.print(value / 1000000.0, 4); lcd.print(" MR"); break;
+      default: break;
+    }
   }
 }
 
@@ -206,7 +282,7 @@ void bootAnimation() {
 
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("San sang do C!");
+  lcd.print("San sang do C/R!");
   lcd.setCursor(0, 1);
   lcd.print("R chuan: 24k 1%");
   delay(1200);
@@ -217,7 +293,9 @@ void setup() {
   pinMode(PIN_CHARGE, OUTPUT);
   digitalWrite(PIN_CHARGE, LOW);
   pinMode(PIN_BUTTON, INPUT_PULLUP);
+  pinMode(PIN_MODE_BTN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), onButtonPress, FALLING);
+  attachInterrupt(digitalPinToInterrupt(PIN_MODE_BTN), onModeButtonPress, FALLING);
 
   analogReadResolution(12); // STM32 ADC 12-bit
 
@@ -228,15 +306,21 @@ void setup() {
 void loop() {
   checkUnitButton();
 
-  float Cx = measureCapacitance();
-  showResult(Cx);
+  float value = (currentMode == MODE_CAP) ? measureCapacitance() : measureResistance();
+  showResult(value);
 
-  if (Cx > 0) {
-    Serial.print("Cx = ");
-    Serial.print(Cx * 1e9, 4);
-    Serial.println(" nF");
+  if (currentMode == MODE_CAP) {
+    if (value > 0) {
+      Serial.print("Cx = "); Serial.print(value * 1e9, 4); Serial.println(" nF");
+    } else {
+      Serial.println(value == -1 ? "Loi: tu chua xa het" : "Loi: qua thoi gian");
+    }
   } else {
-    Serial.println(Cx == -1 ? "Loi: tu chua xa het" : "Loi: qua thoi gian");
+    if (value > 0) {
+      Serial.print("Rx = "); Serial.print(value, 2); Serial.println(" Ohm");
+    } else {
+      Serial.println(value == -3 ? "Loi: ho mach/qua lon" : "Loi: chap mach/qua nho");
+    }
   }
 
   // Cho 800ms nhung van lien tuc kiem tra nut bam trong luc cho,
