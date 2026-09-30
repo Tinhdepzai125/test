@@ -1,218 +1,146 @@
 /*
- * C4 BOMB SIMULATOR - PASSIVE BUZZER
- * Blue Pill (STM32F103C8) - Arduino framework
- * Passive Buzzer (coi thu dong) noi tai PB8
- * LCD1602 PARALLEL (4-bit mode)
- * 🤡 C4 Simulator v2
- *
- * Nut bam:
- *  PA1 -> GND: Nhan de Kich hoat (ARM) / Giu 5s de Go bom (DEFUSE)
- *  PB6 -> GND: Nhan de Reset game
- *
- * Ket noi LCD1602:
- *  RS -> PB12, E -> PB13, D4 -> PB14, D5 -> PB15, D6 -> PB4, D7 -> PB5
- *
- * Ket noi Buzzer Thu Dong:
- *  PB8 -> Chan tin hieu (I/O hoac S) cua Passive Buzzer
+ * BAD APPLE! - FULL SONG (PASSIVE BUZZER EDITION)
+ * Board: Blue Pill (STM32F103C8)
+ * Buzzer: Passive Buzzer o PB8
+ * LCD: LCD1602 Parallel (PB12, PB13, PB14, PB15, PB4, PB5)
  */
 
 #include <Arduino.h>
 #include <LiquidCrystal.h>
 
-// ==== CAU HINH CHAN ====
-#define PIN_BUZZER     PB8   // Passive Buzzer (dung ham tone())
-#define PIN_BTN_ACTION PA1   // Nut ARM / DEFUSE
-#define PIN_BTN_RESET  PB6   // Nut Reset
+#define PIN_BUZZER PB8
 
-// ==== CAU HINH LCD (RS, E, D4, D5, D6, D7) ====
-LiquidCrystal lcd(PB12, PB13, PB14, PB15, PB4, PB5);
+// Định nghĩa tần số nốt nhạc (Hz)
+#define REST 0
+#define NOTE_A3  220
+#define NOTE_B3  247
+#define NOTE_C4  262
+#define NOTE_D4  294
+#define NOTE_E4  330
+#define NOTE_F4  349
+#define NOTE_G4  392
+#define NOTE_GS4 415
+#define NOTE_A4  440
+#define NOTE_AS4 466
+#define NOTE_B4  494
+#define NOTE_C5  523
+#define NOTE_CS5 554
+#define NOTE_D5  587
+#define NOTE_DS5 622
+#define NOTE_E5  659
+#define NOTE_F5  698
+#define NOTE_FS5 740
+#define NOTE_G5  784
+#define NOTE_GS5 831
+#define NOTE_A5  880
 
-// ==== THOI GIAN GAME ====
-const uint32_t TOTAL_TIME_SEC = 40;       // 40 giay dem nguoc
-const uint32_t DEFUSE_HOLD_TIME_MS = 5000; // Giu nut 5 giay de go bom
-
-enum BombState {
-  STATE_IDLE,      // Cho dat bom
-  STATE_ARMED,     // Bom dang dem nguoc
-  STATE_DEFUSED,   // Da go bom thanh cong
-  STATE_EXPLODED   // Bom no!
+// Cấu trúc nén dữ liệu: Tần số (2 byte) + Độ dài (2 byte) = 4 byte / nốt
+struct Note {
+  uint16_t freq;
+  uint16_t durationMs;
 };
 
-BombState state = STATE_IDLE;
+LiquidCrystal lcd(PB12, PB13, PB14, PB15, PB4, PB5);
 
-uint32_t startTime = 0;
-uint32_t lastBeepTime = 0;
-uint32_t defuseStartTime = 0;
-bool isDefusing = false;
+// Toàn bộ giai điệu full bài Bad Apple! lưu trên FLASH memory (RODATA)
+const Note fullMelody[] PROGMEM = {
+  // === INTRO ===
+  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
+  {NOTE_A4, 400}, {NOTE_F4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200},
+  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_D4, 200},
+  {NOTE_C4, 200}, {NOTE_A3, 200}, {NOTE_C4, 200}, {NOTE_D4, 400},
+  
+  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
+  {NOTE_A4, 400}, {NOTE_F4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200},
+  {NOTE_F4, 400}, {NOTE_E4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200}, {NOTE_D4, 800},
 
-// Phat 1 tieng bip voi tan so (Hz) va thoi gian (ms)
-void playBeep(uint16_t freq, uint32_t durationMs) {
-  tone(PIN_BUZZER, freq, durationMs);
-  delay(durationMs);
-  noTone(PIN_BUZZER);
-}
+  // === VERSE 1 ===
+  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
+  {NOTE_A4, 200}, {NOTE_A4, 200}, {NOTE_A4, 200}, {NOTE_C5, 200},
+  {NOTE_G4, 200}, {NOTE_G4, 200}, {NOTE_G4, 200}, {NOTE_A4, 200},
+  {NOTE_F4, 200}, {NOTE_F4, 200}, {NOTE_E4, 200}, {NOTE_D4, 200},
 
-// Hieu ung am thanh Victory khi go bom thanh cong
-void playDefusedSound() {
-  tone(PIN_BUZZER, 1047, 100); delay(120); // Not C6
-  tone(PIN_BUZZER, 1318, 100); delay(120); // Not E6
-  tone(PIN_BUZZER, 1568, 250); delay(300); // Not G6
-  noTone(PIN_BUZZER);
-}
+  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
+  {NOTE_A4, 200}, {NOTE_A4, 200}, {NOTE_A4, 200}, {NOTE_C5, 200},
+  {NOTE_G4, 400}, {NOTE_A4, 400}, {NOTE_D4, 800},
 
-// Gia lap tieng no: quat tan so tu cao xuong thap tao am thanh rền ầm ầm
-void playExplosionSound() {
-  uint32_t startExplosion = millis();
-  while (millis() - startExplosion < 2500) {
-    for (int freq = 600; freq >= 80; freq -= 20) {
-      tone(PIN_BUZZER, freq, 8);
-      delay(3);
-    }
-  }
-  noTone(PIN_BUZZER);
-}
+  // === CHORUS 1 (Điệp khúc cao trào) ===
+  {NOTE_D5, 200}, {NOTE_C5, 200}, {NOTE_A4, 200}, {NOTE_F4, 200},
+  {NOTE_G4, 400}, {NOTE_A4, 400}, {NOTE_D5, 200}, {NOTE_C5, 200},
+  {NOTE_A4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200}, {NOTE_A4, 200},
+  {NOTE_F4, 200}, {NOTE_E4, 200}, {NOTE_D4, 200}, {NOTE_C4, 200},
+
+  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
+  {NOTE_A4, 400}, {NOTE_F4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200},
+  {NOTE_F4, 400}, {NOTE_E4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200}, {NOTE_D4, 800},
+
+  // === VERSE 2 ===
+  {NOTE_A4, 200}, {NOTE_C5, 200}, {NOTE_D5, 400}, {NOTE_D5, 200}, {NOTE_C5, 200}, {NOTE_A4, 400},
+  {NOTE_G4, 200}, {NOTE_A4, 200}, {NOTE_C5, 400}, {NOTE_A4, 200}, {NOTE_G4, 200}, {NOTE_F4, 400},
+  {NOTE_D4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200}, {NOTE_A4, 200}, {NOTE_C5, 400}, {NOTE_D5, 800},
+
+  // === BRIDGE / SOLO ===
+  {NOTE_F5, 200}, {NOTE_E5, 200}, {NOTE_D5, 200}, {NOTE_C5, 200},
+  {NOTE_D5, 400}, {NOTE_A4, 400}, {NOTE_C5, 200}, {NOTE_A4, 200},
+  {NOTE_G4, 400}, {NOTE_F4, 400}, {NOTE_D4, 800},
+
+  // === REPEAT CHORUS (MAX SPEED) ===
+  {NOTE_D5, 180}, {NOTE_C5, 180}, {NOTE_A4, 180}, {NOTE_F4, 180},
+  {NOTE_G4, 360}, {NOTE_A4, 360}, {NOTE_D5, 180}, {NOTE_C5, 180},
+  {NOTE_A4, 180}, {NOTE_F4, 180}, {NOTE_G4, 180}, {NOTE_A4, 180},
+  {NOTE_F4, 180}, {NOTE_E4, 180}, {NOTE_D4, 180}, {NOTE_C4, 180},
+  {NOTE_F4, 360}, {NOTE_E4, 360}, {NOTE_D4, 720},
+
+  // === OUTRO ===
+  {NOTE_D4, 250}, {NOTE_E4, 250}, {NOTE_F4, 250}, {NOTE_G4, 250},
+  {NOTE_A4, 500}, {NOTE_F4, 500}, {NOTE_D4, 1000}, {REST, 500}
+};
+
+const uint16_t TOTAL_NOTES = sizeof(fullMelody) / sizeof(Note);
 
 void setup() {
   pinMode(PIN_BUZZER, OUTPUT);
-  pinMode(PIN_BTN_ACTION, INPUT_PULLUP);
-  pinMode(PIN_BTN_RESET, INPUT_PULLUP);
-
   lcd.begin(16, 2);
+
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("  C4 SIMULATOR  ");
+  lcd.print(" BAD APPLE FULL ");
   lcd.setCursor(0, 1);
-  lcd.print("Nhan PA1 de ARM!");
+  lcd.print("  STM32F103C8T6 ");
+  delay(2000);
 }
 
 void loop() {
-  uint32_t now = millis();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Playing BadApple");
 
-  // Nhan PB6 bat ky luc nao de Reset ve ban dau
-  if (digitalRead(PIN_BTN_RESET) == LOW) {
-    state = STATE_IDLE;
-    noTone(PIN_BUZZER);
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("  C4 SIMULATOR  ");
+  for (uint16_t i = 0; i < TOTAL_NOTES; i++) {
+    // Đọc trực tiếp dữ liệu nốt từ Flash memory
+    Note currentNote;
+    memcpy_P(&currentNote, &fullMelody[i], sizeof(Note));
+
+    if (currentNote.freq != REST) {
+      tone(PIN_BUZZER, currentNote.freq, currentNote.durationMs * 0.88);
+    } else {
+      noTone(PIN_BUZZER);
+    }
+
+    // Cập nhật Progress bar trên LCD1602
+    uint8_t progress = map(i, 0, TOTAL_NOTES - 1, 0, 16);
     lcd.setCursor(0, 1);
-    lcd.print("Nhan PA1 de ARM!");
-    delay(300);
+    for (uint8_t p = 0; p < 16; p++) {
+      if (p < progress) lcd.write(255);
+      else lcd.print(" ");
+    }
+
+    delay(currentNote.durationMs);
+    noTone(PIN_BUZZER);
   }
 
-  switch (state) {
-    case STATE_IDLE: {
-      // Nhan PA1 de Kich hoat / Dat bom
-      if (digitalRead(PIN_BTN_ACTION) == LOW) {
-        state = STATE_ARMED;
-        startTime = millis();
-        lastBeepTime = 0;
-        
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("BOMB HAS BEEN");
-        lcd.setCursor(0, 1);
-        lcd.print("PLANTED! 00:40");
-        
-        playBeep(2400, 150); // Bip cao khi plant
-        delay(500);
-      }
-      break;
-    }
-
-    case STATE_ARMED: {
-      uint32_t elapsed = (now - startTime) / 1000;
-
-      // Kiem tra het thoi gian -> NO!
-      if (elapsed >= TOTAL_TIME_SEC) {
-        state = STATE_EXPLODED;
-        break;
-      }
-
-      uint32_t remaining = TOTAL_TIME_SEC - elapsed;
-
-      // Update LCD thoi gian con lai
-      lcd.setCursor(0, 1);
-      lcd.print("Time: 00:");
-      if (remaining < 10) lcd.print("0");
-      lcd.print(remaining);
-      lcd.print("   ");
-
-      // Tinh chu ky bip: cang gan het giay cang keu dồn dập
-      uint32_t beepInterval;
-      if (remaining > 20)      beepInterval = 1000; // 1s/lan
-      else if (remaining > 10) beepInterval = 500;  // 0.5s/lan
-      else if (remaining > 5)  beepInterval = 250;  // 0.25s/lan
-      else if (remaining > 2)  beepInterval = 125;  // 0.125s/lan
-      else                     beepInterval = 60;   // Dồn dập cực nhanh
-
-      if (now - lastBeepTime >= beepInterval) {
-        lastBeepTime = now;
-        // Phat tieng tít chuẩn CS ở tần số 2000Hz (2kHz) trong 30ms
-        tone(PIN_BUZZER, 2000, 30);
-      }
-
-      // XU LY GO BOM (Giu nut PA1)
-      if (digitalRead(PIN_BTN_ACTION) == LOW) {
-        if (!isDefusing) {
-          isDefusing = true;
-          defuseStartTime = now;
-        } else {
-          uint32_t holdTime = now - defuseStartTime;
-          uint32_t progress = (holdTime * 100) / DEFUSE_HOLD_TIME_MS;
-          if (progress > 100) progress = 100;
-
-          lcd.setCursor(0, 0);
-          lcd.print("DEFUSING... ");
-          if (progress < 10) lcd.print(" ");
-          lcd.print(progress);
-          lcd.print("% ");
-
-          if (holdTime >= DEFUSE_HOLD_TIME_MS) {
-            state = STATE_DEFUSED;
-            isDefusing = false;
-          }
-        }
-      } else {
-        if (isDefusing) {
-          isDefusing = false;
-          lcd.setCursor(0, 0);
-          lcd.print("BOMB PLANTED!   ");
-        }
-      }
-      break;
-    }
-
-    case STATE_DEFUSED: {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("BOMB HAS BEEN");
-      lcd.setCursor(0, 1);
-      lcd.print("DEFUSED! CT WIN");
-      
-      playDefusedSound();
-
-      // Dung cho den khi nhan PB6 de reset
-      while (digitalRead(PIN_BTN_RESET) == HIGH) {
-        delay(50);
-      }
-      break;
-    }
-
-    case STATE_EXPLODED: {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("  *** BOOM! *** ");
-      lcd.setCursor(0, 1);
-      lcd.print(" TERRORISTS WIN ");
-
-      playExplosionSound();
-
-      // Dung cho den khi nhan PB6 de reset
-      while (digitalRead(PIN_BTN_RESET) == HIGH) {
-        delay(50);
-      }
-      break;
-    }
-  }
+  // Kết thúc bài nghỉ 3s rồi hát lại
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("   FINISHED!    ");
+  delay(3000);
 }
