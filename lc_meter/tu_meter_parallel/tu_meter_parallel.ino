@@ -1,341 +1,206 @@
 /*
- * TU + DIEN TRO METER - RC CHARGING + CHIA AP TINH
+ * C4 BOMB SIMULATOR
  * Blue Pill (STM32F103C8) - Arduino framework
- * R chuan = 24kOhm 1%
- * LCD1602 dau PARALLEL (4-bit mode) - khong dung I2C
- * 🤡 by Tinh
- *
- * 2 CHE DO (chuyen bang nut PB6):
- *  MODE_CAP: Do tu dien (C), phuong phap RC charging
- *    1. Xa tu ve 0V truoc
- *    2. Kich nap qua PB0 -> R 24k -> Cx -> GND
- *    3. Doc ADC lien tuc tai diem giua (PA0), do thoi gian dat 63.2% Vcc
- *    4. Cx = tau / R_REF
- *
- *  MODE_RES: Do dien tro (R), phuong phap chia ap tinh
- *    1. PB0 giu HIGH co dinh
- *    2. Doc dien ap tai diem giua (PA0), lay trung binh 20 mau
- *    3. Rx = R_REF * V_A / (VCC - V_A)
- *    Dai do: ~1R - 999k (gioi han boi do phan giai ADC va R_REF=24k)
- *
- * Ket noi mach do (dung chung cho ca 2 mode):
- *  PB0  -> 1 chan R 24k
- *  Chan kia R 24k -> Nut A -> Cx hoac Rx -> GND
- *  Nut A -> PA0 (ADC input)
+ * Active Buzzer (mach dao dong tich hop) o PB8
+ * LCD1602 PARALLEL (4-bit mode)
+ * 🤡 C4 Simulator
  *
  * Nut bam:
- *  PA1 -> GND: toggle don vi hien thi (AUTO/1/2/3)
- *  PB6 -> GND: toggle che do Do C / Do R
+ *  PA1 -> GND: Nhan de Kich hoat (ARM) / Giu 5s de Go bom (DEFUSE)
+ *  PB6 -> GND: Nhan de Reset game
  *
- * Ket noi LCD1602 (parallel, 4-bit):
- *  VSS -> GND
- *  VDD -> 5V
- *  VO  -> giua bien tro 10k (chinh contrast), 2 chan con lai cua bien tro noi 5V va GND
- *  RS  -> PB12
- *  RW  -> GND
- *  E   -> PB13
- *  D4  -> PB14
- *  D5  -> PB15
- *  D6  -> PB4
- *  D7  -> PB5
- *  A (backlight+) -> 5V (qua tro han che dong neu module khong co san)
- *  K (backlight-) -> GND
+ * Ket noi LCD1602:
+ *  RS -> PB12, E -> PB13, D4 -> PB14, D5 -> PB15, D6 -> PB4, D7 -> PB5
  *
- * LUU Y: khong dung PA9/PA10 cho LCD vi day la chan UART1 TX/RX,
- * bi Serial.begin() chiem dung, gay xung dot du lieu -> LCD ra khoi dac.
+ * Ket noi Buzzer:
+ *  PB8 -> Chan tin hieu / VCC cua Active Buzzer
  */
 
 #include <Arduino.h>
 #include <LiquidCrystal.h>
 
-// ==== CAU HINH CHAN DO ====
-#define PIN_CHARGE   PB0   // kich nap tu (C) / nguon chia ap (R)
-#define PIN_ADC      PA0   // doc dien ap tai nut A
-#define PIN_BUTTON   PA1   // nut toggle don vi hien thi (noi GND khi nhan)
-#define PIN_MODE_BTN PB6   // nut chuyen che do Do C / Do R (noi GND khi nhan)
+// ==== CAU HINH CHAN ====
+#define PIN_BUZZER     PB8   // Active Buzzer (keo muc HIGH de keu)
+#define PIN_BTN_ACTION PA1   // Nut ARM (Dat bom) va DEFUSE (Go bom)
+#define PIN_BTN_RESET  PB6   // Nut Reset tro hoi
 
-// ==== CAU HINH CHAN LCD (RS, E, D4, D5, D6, D7) ====
+// ==== CAU HINH LCD (RS, E, D4, D5, D6, D7) ====
 LiquidCrystal lcd(PB12, PB13, PB14, PB15, PB4, PB5);
 
-// ==== GIA TRI CHUAN ====
-const float R_REF = 24000.0;   // 24 kOhm 1%
-const float VCC = 3.3;
-const float THRESHOLD_RATIO = 0.632; // 63.2% Vcc = 1 tau
+// ==== THOI GIAN GAME ====
+const uint32_t TOTAL_TIME_SEC = 40;       // 40 giay dem nguoc
+const uint32_t DEFUSE_HOLD_TIME_MS = 5000; // Giu nut 5 giay de go bom
 
-// ==== CHE DO DO: TU DIEN (C) hay DIEN TRO (R) ====
-enum MeasureMode { MODE_CAP, MODE_RES };
-volatile MeasureMode currentMode = MODE_CAP;
+enum BombState {
+  STATE_IDLE,      // Cho dat bom
+  STATE_ARMED,     // Bom dang dem nguoc
+  STATE_DEFUSED,   // Da go bom thanh cong
+  STATE_EXPLODED   // Bom no!
+};
 
-// ==== CHE DO DON VI HIEN THI (dung chung cho ca C va R, ten khac nhau tuy mode) ====
-enum UnitMode { UNIT_AUTO, UNIT_1, UNIT_2, UNIT_3 };
-UnitMode currentUnit = UNIT_AUTO;
+BombState state = STATE_IDLE;
 
-const char* unitName(UnitMode u) {
-  if (currentMode == MODE_CAP) {
-    switch (u) {
-      case UNIT_AUTO: return "AUTO";
-      case UNIT_1:     return "pF";
-      case UNIT_2:     return "nF";
-      case UNIT_3:     return "uF";
-    }
-  } else {
-    switch (u) {
-      case UNIT_AUTO: return "AUTO";
-      case UNIT_1:     return "R";
-      case UNIT_2:     return "kR";
-      case UNIT_3:     return "MR"; // ghi "R" thay Omega vi LCD HD44780 khong co san ky tu Omega chuan
-    }
-  }
-  return "?";
-}
+uint32_t startTime = 0;
+uint32_t lastBeepTime = 0;
+uint32_t defuseStartTime = 0;
+bool isDefusing = false;
 
-// Doc nut bam bang ngat ngoai (interrupt) - khong bao gio bo lo lan nhan
-// du code dang ban do/xa tu, vi ngat se cham vao bat ky luc nao chan xuong muc thap
-volatile bool buttonFlag = false;
-volatile uint32_t lastInterruptTime = 0;
-
-volatile bool modeButtonFlag = false;
-volatile uint32_t lastModeInterruptTime = 0;
-
-void onButtonPress() {
-  uint32_t now = millis();
-  if (now - lastInterruptTime > 150) {
-    buttonFlag = true;
-    lastInterruptTime = now;
-  }
-}
-
-void onModeButtonPress() {
-  uint32_t now = millis();
-  if (now - lastModeInterruptTime > 150) {
-    modeButtonFlag = true;
-    lastModeInterruptTime = now;
-  }
-}
-
-// Goi trong loop() de xu ly flag do ISR dat, doi don vi hien thi
-void checkUnitButton() {
-  if (buttonFlag) {
-    buttonFlag = false;
-    currentUnit = (UnitMode)((currentUnit + 1) % 4);
-  }
-  if (modeButtonFlag) {
-    modeButtonFlag = false;
-    currentMode = (currentMode == MODE_CAP) ? MODE_RES : MODE_CAP;
-    currentUnit = UNIT_AUTO; // reset ve auto khi doi mode, tranh nham don vi cu
-  }
-}
-
-// Doc ADC ra dien ap (STM32 ADC 12-bit, 0-4095)
-float readVoltage() {
-  int raw = analogRead(PIN_ADC);
-  return (raw / 4095.0) * VCC;
-}
-
-// Xa tu ve gan 0V truoc khi do
-float lastCx = 100e-9; // uoc luong C ban dau (100nF), cap nhat dan sau moi lan do
-
-void dischargeCap() {
-  pinMode(PIN_CHARGE, OUTPUT);
-  digitalWrite(PIN_CHARGE, LOW);
-
-  // Thoi gian xa can thiet: 5*tau (5*R*C) de xa ve duoi 1% Vcc ban dau
-  float dischargeTimeMs = 5.0 * R_REF * lastCx * 1000.0;
-
-  // Gioi han an toan: toi thieu 50ms (tu nho), toi da 3000ms (tranh treo qua lau)
-  if (dischargeTimeMs < 50) dischargeTimeMs = 50;
-  if (dischargeTimeMs > 3000) dischargeTimeMs = 3000;
-
-  delay((uint32_t)dischargeTimeMs);
-}
-
-// Do C: kich nap va bat thoi gian den khi dat nguong 63.2%
-float measureCapacitance() {
-  dischargeCap();
-
-  float vStart = readVoltage();
-  if (vStart > 0.1) {
-    return -1; // tu chua xa het
-  }
-
-  float threshold = VCC * THRESHOLD_RATIO;
-
-  uint32_t t0 = micros();
-  digitalWrite(PIN_CHARGE, HIGH);
-
-  uint32_t timeout = 2000000; // 2 giay toi da
-  float v;
-  do {
-    v = readVoltage();
-    if (micros() - t0 > timeout) {
-      digitalWrite(PIN_CHARGE, LOW);
-      return -2; // qua thoi gian
-    }
-  } while (v < threshold);
-
-  uint32_t tau_us = micros() - t0;
-  digitalWrite(PIN_CHARGE, LOW);
-
-  float tau_s = tau_us / 1e6;
-  float Cx = tau_s / R_REF;
-
-  lastCx = Cx; // cap nhat de lan xa sau tinh dung thoi gian
-
-  return Cx;
-}
-
-// Do R: chia ap tinh, khong can nap/xa gi ca
-// PB0 (HIGH co dinh) -- R_REF -- Nut A -- Rx -- GND, doc V tai Nut A qua PA0
-// Rx = R_REF * V_A / (VCC - V_A)
-float measureResistance() {
-  pinMode(PIN_CHARGE, OUTPUT);
-  digitalWrite(PIN_CHARGE, HIGH);
-  delay(5); // cho on dinh dien ap truoc khi doc
-
-  // Lay trung binh vai lan doc de giam nhieu ADC
-  float sumV = 0;
-  const int samples = 20;
-  for (int i = 0; i < samples; i++) {
-    sumV += readVoltage();
-    delayMicroseconds(200);
-  }
-  float vA = sumV / samples;
-
-  digitalWrite(PIN_CHARGE, LOW); // tra ve trang thai an toan sau khi do
-
-  // Chan hoi de tranh chia cho so gan 0 (vA qua gan VCC -> mau so am/qua nho)
-  if (vA >= VCC - 0.005) {
-    return -3; // ho mach / Rx qua lon
-  }
-  if (vA < 0.02) {
-    return -4; // chap mach / Rx qua nho (gan 0R)
-  }
-
-  float Rx = R_REF * vA / (VCC - vA);
-
-  // Kiem tra hop ly sau khi tinh: chan floating (khong noi gi/do khong khi)
-  // se cho ra Rx rat lon do nhieu/leakage, khong on dinh -> loai bo luon
-  // thay vi hien thi mot con so vo nghia
-  if (Rx > 999000.0) {
-    return -3; // ngoai dai do (>999k), coi nhu ho mach
-  }
-
-  return Rx; // don vi Ohm
-}
-
-void showResult(float value) {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(currentMode == MODE_CAP ? "C [" : "R [");
-  lcd.print(unitName(currentUnit));
-  lcd.print("]");
-
-  lcd.setCursor(0, 1);
-
-  if (currentMode == MODE_CAP) {
-    if (value == -1) { lcd.print("Tu chua xa het"); return; }
-    if (value == -2) { lcd.print("Qua thoi gian!"); return; }
-
-    UnitMode showAs = currentUnit;
-    if (showAs == UNIT_AUTO) {
-      if (value < 1e-9) showAs = UNIT_1;
-      else if (value < 1e-6) showAs = UNIT_2;
-      else showAs = UNIT_3;
-    }
-    switch (showAs) {
-      case UNIT_1: lcd.print(value * 1e12, 2); lcd.print(" pF"); break;
-      case UNIT_2: lcd.print(value * 1e9, 3); lcd.print(" nF"); break;
-      case UNIT_3: lcd.print(value * 1e6, 3); lcd.print(" uF"); break;
-      default: break;
-    }
-  } else {
-    if (value == -3) { lcd.print("Ho mach/qua lon"); return; }
-    if (value == -4) { lcd.print("Chap/qua nho"); return; }
-
-    UnitMode showAs = currentUnit;
-    if (showAs == UNIT_AUTO) {
-      if (value < 1000) showAs = UNIT_1;
-      else if (value < 1000000) showAs = UNIT_2;
-      else showAs = UNIT_3;
-    }
-    switch (showAs) {
-      case UNIT_1: lcd.print(value, 1); lcd.print(" R"); break;
-      case UNIT_2: lcd.print(value / 1000.0, 3); lcd.print(" kR"); break;
-      case UNIT_3: lcd.print(value / 1000000.0, 4); lcd.print(" MR"); break;
-      default: break;
-    }
-  }
-}
-
-void bootAnimation() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("  TU METER v1  ");
-  lcd.setCursor(0, 1);
-  lcd.print("  by Tinh 8=)   ");
-  delay(1000);
-
-  // Progress bar chay tu trai qua phai tren dong 2
-  lcd.setCursor(0, 1);
-  lcd.print("[                ]");
-  delay(150);
-
-  for (int i = 0; i < 16; i++) {
-    lcd.setCursor(1 + i, 1);
-    lcd.write(byte(255)); // ky tu block dac (full block) co san trong ROM HD44780
-    delay(60);
-  }
-  delay(300);
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("San sang do C/R!");
-  lcd.setCursor(0, 1);
-  lcd.print("R chuan: 24k 1%");
-  delay(1200);
+// Ham phat tieng bip ngan cho active buzzer
+void playBeep(uint32_t durationMs) {
+  digitalWrite(PIN_BUZZER, HIGH);
+  delay(durationMs);
+  digitalWrite(PIN_BUZZER, LOW);
 }
 
 void setup() {
-  Serial.begin(115200);
-  pinMode(PIN_CHARGE, OUTPUT);
-  digitalWrite(PIN_CHARGE, LOW);
-  pinMode(PIN_BUTTON, INPUT_PULLUP);
-  pinMode(PIN_MODE_BTN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), onButtonPress, FALLING);
-  attachInterrupt(digitalPinToInterrupt(PIN_MODE_BTN), onModeButtonPress, FALLING);
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW);
 
-  analogReadResolution(12); // STM32 ADC 12-bit
+  pinMode(PIN_BTN_ACTION, INPUT_PULLUP);
+  pinMode(PIN_BTN_RESET, INPUT_PULLUP);
 
   lcd.begin(16, 2);
-  bootAnimation();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("  C4 SIMULATOR  ");
+  lcd.setCursor(0, 1);
+  lcd.print("Nhan PA1 de ARM!");
 }
 
 void loop() {
-  checkUnitButton();
+  uint32_t now = millis();
 
-  float value = (currentMode == MODE_CAP) ? measureCapacitance() : measureResistance();
-  showResult(value);
-
-  if (currentMode == MODE_CAP) {
-    if (value > 0) {
-      Serial.print("Cx = "); Serial.print(value * 1e9, 4); Serial.println(" nF");
-    } else {
-      Serial.println(value == -1 ? "Loi: tu chua xa het" : "Loi: qua thoi gian");
-    }
-  } else {
-    if (value > 0) {
-      Serial.print("Rx = "); Serial.print(value, 2); Serial.println(" Ohm");
-    } else {
-      Serial.println(value == -3 ? "Loi: ho mach/qua lon" : "Loi: chap mach/qua nho");
-    }
+  // Nhan PB6 bat ky luc nao de Reset ve ban dau
+  if (digitalRead(PIN_BTN_RESET) == LOW) {
+    state = STATE_IDLE;
+    digitalWrite(PIN_BUZZER, LOW);
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("  C4 SIMULATOR  ");
+    lcd.setCursor(0, 1);
+    lcd.print("Nhan PA1 de ARM!");
+    delay(300); // Debounce
   }
 
-  // Cho 800ms nhung van lien tuc kiem tra nut bam trong luc cho,
-  // tranh bo lo lan nhan do delay() cung chan mat het thoi gian
-  uint32_t waitStart = millis();
-  while (millis() - waitStart < 800) {
-    checkUnitButton();
-    delay(10);
+  switch (state) {
+    case STATE_IDLE: {
+      // Nhan PA1 de Kich hoat / Dat bom
+      if (digitalRead(PIN_BTN_ACTION) == LOW) {
+        state = STATE_ARMED;
+        startTime = millis();
+        lastBeepTime = 0;
+        
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("BOMB HAS BEEN");
+        lcd.setCursor(0, 1);
+        lcd.print("PLANTED! 00:40");
+        
+        playBeep(200);
+        delay(500);
+      }
+      break;
+    }
+
+    case STATE_ARMED: {
+      uint32_t elapsed = (now - startTime) / 1000;
+
+      // Kiem tra neu het thoi gian -> NO!
+      if (elapsed >= TOTAL_TIME_SEC) {
+        state = STATE_EXPLODED;
+        break;
+      }
+
+      uint32_t remaining = TOTAL_TIME_SEC - elapsed;
+
+      // Update LCD thoi gian con lai
+      lcd.setCursor(0, 1);
+      lcd.print("Time: 00:");
+      if (remaining < 10) lcd.print("0");
+      lcd.print(remaining);
+      lcd.print("   ");
+
+      // Tinh chu ky bip: cang gan het giay cang keu dồn dập
+      uint32_t beepInterval;
+      if (remaining > 20)      beepInterval = 1000; // 1s/lan
+      else if (remaining > 10) beepInterval = 500;  // 0.5s/lan
+      else if (remaining > 5)  beepInterval = 250;  // 0.25s/lan
+      else if (remaining > 2)  beepInterval = 125;  // 0.125s/lan
+      else                     beepInterval = 60;   // Dồn dập cực nhanh
+
+      if (now - lastBeepTime >= beepInterval) {
+        lastBeepTime = now;
+        playBeep(30);
+      }
+
+      // XU LY GO BOM (Giu nut PA1)
+      if (digitalRead(PIN_BTN_ACTION) == LOW) {
+        if (!isDefusing) {
+          isDefusing = true;
+          defuseStartTime = now;
+        } else {
+          uint32_t holdTime = now - defuseStartTime;
+          uint32_t progress = (holdTime * 100) / DEFUSE_HOLD_TIME_MS;
+          if (progress > 100) progress = 100;
+
+          lcd.setCursor(0, 0);
+          lcd.print("DEFUSING... ");
+          if (progress < 10) lcd.print(" ");
+          lcd.print(progress);
+          lcd.print("% ");
+
+          if (holdTime >= DEFUSE_HOLD_TIME_MS) {
+            state = STATE_DEFUSED;
+            isDefusing = false;
+          }
+        }
+      } else {
+        if (isDefusing) {
+          isDefusing = false;
+          lcd.setCursor(0, 0);
+          lcd.print("BOMB PLANTED!   ");
+        }
+      }
+      break;
+    }
+
+    case STATE_DEFUSED: {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("BOMB HAS BEEN");
+      lcd.setCursor(0, 1);
+      lcd.print("DEFUSED! CT WIN");
+      
+      // Am thanh chien thang: Bip 3 nhịp dài
+      for (int i = 0; i < 3; i++) {
+        playBeep(150);
+        delay(100);
+      }
+
+      // Dung cho den khi nhan PB6 de choi lai
+      while (digitalRead(PIN_BTN_RESET) == HIGH) {
+        delay(50);
+      }
+      break;
+    }
+
+    case STATE_EXPLODED: {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("  *** BOOM! *** ");
+      lcd.setCursor(0, 1);
+      lcd.print(" TERRORISTS WIN ");
+
+      // Keo coi lien tuc 3 giay gia lap tieng no
+      digitalWrite(PIN_BUZZER, HIGH);
+      delay(3000);
+      digitalWrite(PIN_BUZZER, LOW);
+
+      // Dung cho den khi nhan PB6 de choi lai
+      while (digitalRead(PIN_BTN_RESET) == HIGH) {
+        delay(50);
+      }
+      break;
+    }
   }
 }
-
