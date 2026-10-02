@@ -1,146 +1,164 @@
 /*
- * BAD APPLE! - FULL SONG (PASSIVE BUZZER EDITION)
- * Board: Blue Pill (STM32F103C8)
- * Buzzer: Passive Buzzer o PB8
- * LCD: LCD1602 Parallel (PB12, PB13, PB14, PB15, PB4, PB5)
+ * HID KEYBOARD BRIDGE - Blue Pill (STM32F103C8)
+ * Upload: ST-Link v2
+ * Lenh phim: CP2102 -> PA10 (RX) @ 115200 baud
+ * HID output: Micro USB -> Target device
+ *
+ * Format lenh (ket thuc bang '\n'):
+ *  KEY:<char>         -> Nhan + tha phim (vi du: KEY:A)
+ *  MOD:<combo>        -> To hop phim (vi du: MOD:CTRL+C)
+ *  PRESS:<key>        -> Giu phim
+ *  RELEASE            -> Tha tat ca
+ *  TYPE:<string>      -> Go ca chuoi
+ *  DELAY:<ms>         -> Cho N millisecond
  */
 
 #include <Arduino.h>
-#include <LiquidCrystal.h>
+#include <USBHIDKeyboard.h>
 
-#define PIN_BUZZER PB8
+USBHIDKeyboard Keyboard;
 
-// Định nghĩa tần số nốt nhạc (Hz)
-#define REST 0
-#define NOTE_A3  220
-#define NOTE_B3  247
-#define NOTE_C4  262
-#define NOTE_D4  294
-#define NOTE_E4  330
-#define NOTE_F4  349
-#define NOTE_G4  392
-#define NOTE_GS4 415
-#define NOTE_A4  440
-#define NOTE_AS4 466
-#define NOTE_B4  494
-#define NOTE_C5  523
-#define NOTE_CS5 554
-#define NOTE_D5  587
-#define NOTE_DS5 622
-#define NOTE_E5  659
-#define NOTE_F5  698
-#define NOTE_FS5 740
-#define NOTE_G5  784
-#define NOTE_GS5 831
-#define NOTE_A5  880
+#define CMD_SERIAL  Serial1   // PA9=TX, PA10=RX
+#define CMD_BAUD    115200
 
-// Cấu trúc nén dữ liệu: Tần số (2 byte) + Độ dài (2 byte) = 4 byte / nốt
-struct Note {
-  uint16_t freq;
-  uint16_t durationMs;
-};
+String cmdBuffer = "";
 
-LiquidCrystal lcd(PB12, PB13, PB14, PB15, PB4, PB5);
+// ---- Map modifier ----
+uint8_t parseModifier(const String& s) {
+  if (s == "CTRL")  return KEY_LEFT_CTRL;
+  if (s == "SHIFT") return KEY_LEFT_SHIFT;
+  if (s == "ALT")   return KEY_LEFT_ALT;
+  if (s == "WIN")   return KEY_LEFT_GUI;
+  return 0;
+}
 
-// Toàn bộ giai điệu full bài Bad Apple! lưu trên FLASH memory (RODATA)
-const Note fullMelody[] PROGMEM = {
-  // === INTRO ===
-  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
-  {NOTE_A4, 400}, {NOTE_F4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200},
-  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_D4, 200},
-  {NOTE_C4, 200}, {NOTE_A3, 200}, {NOTE_C4, 200}, {NOTE_D4, 400},
-  
-  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
-  {NOTE_A4, 400}, {NOTE_F4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200},
-  {NOTE_F4, 400}, {NOTE_E4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200}, {NOTE_D4, 800},
+// ---- Map phim dac biet + ky tu thuong ----
+uint8_t parseKey(const String& s) {
+  if (s == "ENTER")     return KEY_RETURN;
+  if (s == "ESC")       return KEY_ESC;
+  if (s == "BACKSPACE") return KEY_BACKSPACE;
+  if (s == "TAB")       return KEY_TAB;
+  if (s == "SPACE")     return ' ';
+  if (s == "DELETE")    return KEY_DELETE;
+  if (s == "HOME")      return KEY_HOME;
+  if (s == "END")       return KEY_END;
+  if (s == "PGUP")      return KEY_PAGE_UP;
+  if (s == "PGDN")      return KEY_PAGE_DOWN;
+  if (s == "UP")        return KEY_UP_ARROW;
+  if (s == "DOWN")      return KEY_DOWN_ARROW;
+  if (s == "LEFT")      return KEY_LEFT_ARROW;
+  if (s == "RIGHT")     return KEY_RIGHT_ARROW;
+  if (s == "F1")        return KEY_F1;
+  if (s == "F2")        return KEY_F2;
+  if (s == "F3")        return KEY_F3;
+  if (s == "F4")        return KEY_F4;
+  if (s == "F5")        return KEY_F5;
+  if (s == "F6")        return KEY_F6;
+  if (s == "F7")        return KEY_F7;
+  if (s == "F8")        return KEY_F8;
+  if (s == "F9")        return KEY_F9;
+  if (s == "F10")       return KEY_F10;
+  if (s == "F11")       return KEY_F11;
+  if (s == "F12")       return KEY_F12;
+  if (s.length() == 1)  return (uint8_t)s[0];
+  return 0;
+}
 
-  // === VERSE 1 ===
-  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
-  {NOTE_A4, 200}, {NOTE_A4, 200}, {NOTE_A4, 200}, {NOTE_C5, 200},
-  {NOTE_G4, 200}, {NOTE_G4, 200}, {NOTE_G4, 200}, {NOTE_A4, 200},
-  {NOTE_F4, 200}, {NOTE_F4, 200}, {NOTE_E4, 200}, {NOTE_D4, 200},
+// ---- Xu ly MOD:CTRL+C, MOD:CTRL+SHIFT+T, v.v. ----
+void handleMod(const String& combo) {
+  // Tach token bang dau '+'
+  uint8_t modKeys[4] = {};
+  int modCount = 0;
+  uint8_t finalKey = 0;
 
-  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
-  {NOTE_A4, 200}, {NOTE_A4, 200}, {NOTE_A4, 200}, {NOTE_C5, 200},
-  {NOTE_G4, 400}, {NOTE_A4, 400}, {NOTE_D4, 800},
+  int start = 0;
+  while (start < (int)combo.length()) {
+    int plus = combo.indexOf('+', start);
+    String token = (plus == -1)
+      ? combo.substring(start)
+      : combo.substring(start, plus);
+    token.trim();
 
-  // === CHORUS 1 (Điệp khúc cao trào) ===
-  {NOTE_D5, 200}, {NOTE_C5, 200}, {NOTE_A4, 200}, {NOTE_F4, 200},
-  {NOTE_G4, 400}, {NOTE_A4, 400}, {NOTE_D5, 200}, {NOTE_C5, 200},
-  {NOTE_A4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200}, {NOTE_A4, 200},
-  {NOTE_F4, 200}, {NOTE_E4, 200}, {NOTE_D4, 200}, {NOTE_C4, 200},
+    uint8_t mod = parseModifier(token);
+    if (mod != 0) {
+      modKeys[modCount++] = mod;
+    } else {
+      finalKey = parseKey(token);
+    }
+    if (plus == -1) break;
+    start = plus + 1;
+  }
 
-  {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200},
-  {NOTE_A4, 400}, {NOTE_F4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200},
-  {NOTE_F4, 400}, {NOTE_E4, 400}, {NOTE_D4, 200}, {NOTE_C4, 200}, {NOTE_D4, 800},
+  for (int i = 0; i < modCount; i++) Keyboard.press(modKeys[i]);
+  if (finalKey) Keyboard.press(finalKey);
+  delay(30);
+  Keyboard.releaseAll();
+}
 
-  // === VERSE 2 ===
-  {NOTE_A4, 200}, {NOTE_C5, 200}, {NOTE_D5, 400}, {NOTE_D5, 200}, {NOTE_C5, 200}, {NOTE_A4, 400},
-  {NOTE_G4, 200}, {NOTE_A4, 200}, {NOTE_C5, 400}, {NOTE_A4, 200}, {NOTE_G4, 200}, {NOTE_F4, 400},
-  {NOTE_D4, 200}, {NOTE_F4, 200}, {NOTE_G4, 200}, {NOTE_A4, 200}, {NOTE_C5, 400}, {NOTE_D5, 800},
+// ---- Xu ly 1 lenh hoan chinh ----
+void processCommand(const String& cmd) {
+  if (cmd.startsWith("KEY:")) {
+    String key = cmd.substring(4);
+    key.trim();
+    uint8_t k = parseKey(key);
+    if (k) {
+      Keyboard.press(k);
+      delay(20);
+      Keyboard.release(k);
+    }
 
-  // === BRIDGE / SOLO ===
-  {NOTE_F5, 200}, {NOTE_E5, 200}, {NOTE_D5, 200}, {NOTE_C5, 200},
-  {NOTE_D5, 400}, {NOTE_A4, 400}, {NOTE_C5, 200}, {NOTE_A4, 200},
-  {NOTE_G4, 400}, {NOTE_F4, 400}, {NOTE_D4, 800},
+  } else if (cmd.startsWith("MOD:")) {
+    String combo = cmd.substring(4);
+    combo.trim();
+    handleMod(combo);
 
-  // === REPEAT CHORUS (MAX SPEED) ===
-  {NOTE_D5, 180}, {NOTE_C5, 180}, {NOTE_A4, 180}, {NOTE_F4, 180},
-  {NOTE_G4, 360}, {NOTE_A4, 360}, {NOTE_D5, 180}, {NOTE_C5, 180},
-  {NOTE_A4, 180}, {NOTE_F4, 180}, {NOTE_G4, 180}, {NOTE_A4, 180},
-  {NOTE_F4, 180}, {NOTE_E4, 180}, {NOTE_D4, 180}, {NOTE_C4, 180},
-  {NOTE_F4, 360}, {NOTE_E4, 360}, {NOTE_D4, 720},
+  } else if (cmd.startsWith("PRESS:")) {
+    String key = cmd.substring(6);
+    key.trim();
+    uint8_t k = parseKey(key);
+    if (k) Keyboard.press(k);
 
-  // === OUTRO ===
-  {NOTE_D4, 250}, {NOTE_E4, 250}, {NOTE_F4, 250}, {NOTE_G4, 250},
-  {NOTE_A4, 500}, {NOTE_F4, 500}, {NOTE_D4, 1000}, {REST, 500}
-};
+  } else if (cmd == "RELEASE") {
+    Keyboard.releaseAll();
 
-const uint16_t TOTAL_NOTES = sizeof(fullMelody) / sizeof(Note);
+  } else if (cmd.startsWith("TYPE:")) {
+    String text = cmd.substring(5);
+    // Giu nguyen case, gõ tung ky tu
+    for (int i = 0; i < (int)text.length(); i++) {
+      Keyboard.print(text[i]);
+      delay(10); // chong mat key
+    }
+
+  } else if (cmd.startsWith("DELAY:")) {
+    uint32_t ms = cmd.substring(6).toInt();
+    if (ms > 0 && ms <= 5000) delay(ms);
+  }
+}
 
 void setup() {
-  pinMode(PIN_BUZZER, OUTPUT);
-  lcd.begin(16, 2);
+  // Khoi dong USB HID truoc
+  Keyboard.begin();
+  delay(1500); // cho host nhan dien USB
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(" BAD APPLE FULL ");
-  lcd.setCursor(0, 1);
-  lcd.print("  STM32F103C8T6 ");
-  delay(2000);
+  // Khoi dong UART nhan lenh
+  CMD_SERIAL.begin(CMD_BAUD);
+  cmdBuffer.reserve(64);
 }
 
 void loop() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Playing BadApple");
+  while (CMD_SERIAL.available()) {
+    char c = (char)CMD_SERIAL.read();
 
-  for (uint16_t i = 0; i < TOTAL_NOTES; i++) {
-    // Đọc trực tiếp dữ liệu nốt từ Flash memory
-    Note currentNote;
-    memcpy_P(&currentNote, &fullMelody[i], sizeof(Note));
-
-    if (currentNote.freq != REST) {
-      tone(PIN_BUZZER, currentNote.freq, currentNote.durationMs * 0.88);
+    if (c == '\n' || c == '\r') {
+      cmdBuffer.trim();
+      if (cmdBuffer.length() > 0) {
+        processCommand(cmdBuffer);
+        cmdBuffer = "";
+      }
     } else {
-      noTone(PIN_BUZZER);
+      if (cmdBuffer.length() < 63) {
+        cmdBuffer += c;
+      }
     }
-
-    // Cập nhật Progress bar trên LCD1602
-    uint8_t progress = map(i, 0, TOTAL_NOTES - 1, 0, 16);
-    lcd.setCursor(0, 1);
-    for (uint8_t p = 0; p < 16; p++) {
-      if (p < progress) lcd.write(255);
-      else lcd.print(" ");
-    }
-
-    delay(currentNote.durationMs);
-    noTone(PIN_BUZZER);
   }
-
-  // Kết thúc bài nghỉ 3s rồi hát lại
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("   FINISHED!    ");
-  delay(3000);
 }
