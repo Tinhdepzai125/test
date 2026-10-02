@@ -1,4 +1,4 @@
-name: Build HID Keyboard Bridge (Blue Pill / STM32F103C8)
+name: Build LC Meter (Blue Pill / STM32F103C8)
 
 on:
   push:
@@ -32,24 +32,22 @@ jobs:
       - name: Cai dat core STM32 (STMicroelectronics)
         run: |
           arduino-cli config init --overwrite
-          arduino-cli config add board_manager.additional_urls \
-            https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
+          arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
           arduino-cli core update-index
           arduino-cli core install STMicroelectronics:stm32
 
-       - name: Cai dat thu vien can thiet
-  run: |
-    arduino-cli lib install "LiquidCrystal"
-    arduino-cli lib install "LiquidCrystal I2C"
-    # Keyboard built-in trong STM32duino core, khong can cai
+      - name: Cai dat thu vien can thiet
+        run: |
+          arduino-cli lib install "LiquidCrystal"
+          arduino-cli lib install "LiquidCrystal I2C"
 
       - name: Build sketch
-  run: |
-    arduino-cli compile \
-      --fqbn "STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8,usb=HID" \
-      "${{ matrix.sketch }}" \
-      --output-dir ./build-output/${{ strategy.job-index }} \
-      --warnings default
+        run: |
+          arduino-cli compile \
+            --fqbn "STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8,usb=HID" \
+            "${{ matrix.sketch }}" \
+            --output-dir ./build-output/${{ strategy.job-index }} \
+            --warnings default
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
