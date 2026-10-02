@@ -37,19 +37,19 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install STMicroelectronics:stm32
 
-      - name: Cai dat thu vien can thiet
-        run: |
-          arduino-cli lib install "LiquidCrystal"
-          arduino-cli lib install "LiquidCrystal I2C"
-          # USBHIDKeyboard la built-in cua STM32duino core, khong can cai rieng
+       - name: Cai dat thu vien can thiet
+  run: |
+    arduino-cli lib install "LiquidCrystal"
+    arduino-cli lib install "LiquidCrystal I2C"
+    # Keyboard built-in trong STM32duino core, khong can cai
 
       - name: Build sketch
-        run: |
-          arduino-cli compile \
-            --fqbn "STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8,usb=HID" \
-            "${{ matrix.sketch }}" \
-            --output-dir ./build-output/${{ strategy.job-index }} \
-            --warnings default
+  run: |
+    arduino-cli compile \
+      --fqbn "STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8,usb=HID" \
+      "${{ matrix.sketch }}" \
+      --output-dir ./build-output/${{ strategy.job-index }} \
+      --warnings default
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
