@@ -14,9 +14,7 @@
  */
 
 #include <Arduino.h>
-#include <USBHIDKeyboard.h>
-
-USBHIDKeyboard Keyboard;
+#include <Keyboard.h>
 
 #define CMD_SERIAL  Serial1   // PA9=TX, PA10=RX
 #define CMD_BAUD    115200
